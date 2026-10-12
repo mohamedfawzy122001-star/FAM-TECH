@@ -871,7 +871,7 @@ const SKIP=[],CH=60000;
 const hsh=s=>{let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return (h>>>0).toString(36)+'.'+s.length};
 const sKeys=()=>Object.keys(db).filter(k=>!SKIP.includes(k)&&db[k]!==undefined);
 const sBase=()=>{try{localStorage.setItem('sms_sbase',JSON.stringify({b:SY.base,r:SY.rb,s:SY.synced}))}catch(e){}try{const t=JSON.stringify(SY.bc);if(t.length<1500000)localStorage.setItem('sms_sbc',t);else localStorage.removeItem('sms_sbc')}catch(e){}};
-function synSet(st,msg){SY.st=st;SY.msg=msg||'';const e=document.getElementById('syn');if(e){e.className='syn '+st;e.title=msg||'';e.textContent=st=='ok'?'☁ متزامن':st=='busy'?'☁ بيزامن…':st=='err'?'☁ خطأ':st=='wait'?'☁ بيتصل…':'☁ محلي'}}
+function synSet(st,msg){SY.st=st;SY.stAt=Date.now();SY.msg=msg||'';const e=document.getElementById('syn');if(e){e.className='syn '+st;e.title=msg||'';e.textContent=st=='ok'?'☁ متزامن':st=='busy'?'☁ بيزامن…':st=='err'?'☁ خطأ':st=='wait'?'☁ بيتصل…':'☁ محلي'}}
 const J=x=>JSON.stringify(x);
 const ident=x=>x&&typeof x=='object'?(x.id!=null?'i:'+x.id:x.u&&x.t?'l:'+x.t+'|'+x.u+'|'+(x.m||''):x.u&&x.p!==undefined?'u:'+x.u:'j:'+J(x)):'v:'+J(x);
 function mergeArr(remote,local){if(!Array.isArray(remote)||!Array.isArray(local))return remote;const ids=new Set(remote.map(ident)),out=remote.slice();local.forEach(x=>{if(!ids.has(ident(x)))out.push(x)});return out}
@@ -908,7 +908,7 @@ async function sSync(){if(!SY.db)return;if(SY.busy){SY.dirty=true;return}if(mdOp
 const save0=save;save=function(){save0();if(SY.db&&!SY.applying){clearTimeout(SY.t);SY.t=setTimeout(sSync,1200)}};
 async function sInit(){if(!window.claude||!window.claude.use){synSet('off','المزامنة شغالة بس من رابط Claude');return}synSet('wait');
  let d=null;try{d=await window.claude.use('db')}catch(e){}if(!d){synSet('off','المزامنة مش متاحة في العرض ده');return}SY.db=d;
- if(!SY.synced){const hasLocal=db.items.length||db.invoices.length||db.purchases.length||db.repairs.length||db.parties.length;SY.fresh=!hasLocal||isDemo()}
+ if(!SY.synced){const hasLocal=['items','invoices','purchases','repairs','parties','exp','staff','adj','tx','cust','quotes','pos','contracts'].some(k=>Array.isArray(db[k])&&db[k].length);SY.fresh=!hasLocal||isDemo()}
  await sSync();
  SY.unsub=SY.db.doc('fam/meta').onSnapshot(s=>{if(!s.exists)return;const m=s.data();if(m.dev===SY.dev)return;const ks=m.keys||{};if(Object.keys(ks).some(k=>ks[k].h!==SY.rb[k])){clearTimeout(SY.t);SY.t=setTimeout(sSync,300)}},e=>{synSet('err',e.code||'')})}
 document.head.insertAdjacentHTML('beforeend','<style>.syn{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);left:8px;z-index:50;font-size:11px;padding:3px 9px;border-radius:20px;background:#ffffff10;color:var(--mut);border:1px solid var(--bd);cursor:pointer}.syn.ok{color:#34d399;border-color:#34d39955}.syn.busy,.syn.wait{color:#f59e0b;border-color:#f59e0b55}.syn.err{color:#ef4444;border-color:#ef444455}</style>');
@@ -1067,17 +1067,18 @@ A.inst=async()=>{if(instEv){instEv.prompt();try{await instEv.userChoice}catch(e)
 /* ---------- Firebase sync (for the installed app) ---------- */
 const FBV='10.12.2',FBU='https://www.gstatic.com/firebasejs/'+FBV+'/';
 const fbCfg=()=>{try{return JSON.parse(localStorage.getItem('fam_fb')||'null')}catch(e){return null}};
-let FB=null;
+let FB=null;const fbSeen={};
 async function fbLoad(cfg){if(window.__fbFake)return window.__fbFake(cfg);
  const [ap,fs,au]=await Promise.all([import(FBU+'firebase-app.js'),import(FBU+'firebase-firestore.js'),import(FBU+'firebase-auth.js')]);
- const app=ap.getApps().length?ap.getApp():ap.initializeApp(cfg),auth=au.getAuth(app),f=fs.getFirestore(app);
+ const app=ap.getApps().length?ap.getApp():ap.initializeApp(cfg),auth=au.getAuth(app),f=(()=>{try{return fs.initializeFirestore(app,{experimentalAutoDetectLongPolling:true})}catch(e){return fs.getFirestore(app)}})();
  const ref=p=>{const d=fs.doc(f,p);return{get:async()=>{const s=await fs.getDoc(d);return{exists:s.exists(),data:()=>s.data()}},set:x=>fs.setDoc(d,x),delete:()=>fs.deleteDoc(d),
   onSnapshot:(n,e)=>fs.onSnapshot(d,s=>n({exists:s.exists(),data:()=>s.data()}),er=>e&&e({code:er.code||'unavailable'})),
-  acquire:o=>fs.runTransaction(f,async t=>{const s=await t.get(d),v=s.exists()?s.data():{},now=Date.now();if(v.exp>now&&v.h!==o.holder)return{acquired:false};t.set(d,{h:o.holder,exp:now+(o.ttlMs||30000)});return{acquired:true}})}};
+  acquire:o=>fs.runTransaction(f,async t=>{const s=await t.get(d),v=s.exists()?s.data():{},now=Date.now(),ttl=o.ttlMs||30000;if(v.h&&v.h!==o.holder&&v.n){const k=v.h+'|'+v.n,L=fbSeen[p];if(!L||L.k!==k){fbSeen[p]={k,t:now};return{acquired:false}}if(now-L.t<(v.ttl||ttl))return{acquired:false}}t.set(d,{h:o.holder,n:Date.now()+Math.random(),ttl,exp:now+ttl});return{acquired:true}})}};
  return {db:{doc:ref},auth:{user:()=>new Promise(r=>{const u=au.onAuthStateChanged(auth,x=>{u();r(x)})}),signIn:(e,p)=>au.signInWithEmailAndPassword(auth,e,p),signOut:()=>au.signOut(auth)}}}
+setInterval(()=>{if(SY.db&&SY.busy&&Date.now()-(SY.stAt||0)>45000){SY.busy=false;synSet('err','الاتصال بطيء، هيحاول تاني');clearTimeout(SY.t);SY.t=setTimeout(sSync,4000)}},10000);
 async function fbStart(){const c=fbCfg();if(!c||!c.cfg)return false;synSet('wait','بيتصل بـ Firebase');
  try{FB=await fbLoad(c.cfg);const u=await FB.auth.user();if(!u){synSet('err','سجّل دخول المزامنة من المزيد');return true}SY.db=FB.db;SY.via='fb';
-  if(!SY.synced){const hasLocal=db.items.length||db.invoices.length||db.purchases.length||db.repairs.length||db.parties.length;SY.fresh=!hasLocal||isDemo()}
+  if(!SY.synced){const hasLocal=['items','invoices','purchases','repairs','parties','exp','staff','adj','tx','cust','quotes','pos','contracts'].some(k=>Array.isArray(db[k])&&db[k].length);SY.fresh=!hasLocal||isDemo()}
   await sSync();if(SY.unsub)SY.unsub();SY.unsub=SY.db.doc('fam/meta').onSnapshot(s=>{if(!s.exists)return;const m=s.data();if(m.dev===SY.dev)return;const ks=m.keys||{};if(Object.keys(ks).some(k=>ks[k].h!==SY.rb[k])){clearTimeout(SY.t);SY.t=setTimeout(sSync,300)}},e=>synSet('err',e.code||''));
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&SY.db)sSync()})}
  catch(e){console.error('fb',e);synSet('err',(e&&e.code)||'تعذر الاتصال بـ Firebase')}return true}
